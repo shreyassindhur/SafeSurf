@@ -1,7 +1,6 @@
-streamlit
-requests
+streamlit==1.37.0
+tensorflow-cpu==2.17.0
 numpy
-tensorflow
-python-whois
-beautifulsoup4
-streamlit-echarts
+pandas
+scikit-learn
+joblib
