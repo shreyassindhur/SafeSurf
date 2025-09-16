@@ -4,3 +4,10 @@ numpy
 requests
 beautifulsoup4
 streamlit-echarts
+whois
+ssl
+socket
+datetime
+urlparse
+os
+re
