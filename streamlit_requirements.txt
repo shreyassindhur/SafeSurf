@@ -1,0 +1,7 @@
+streamlit
+requests
+numpy
+tensorflow
+python-whois
+beautifulsoup4
+streamlit-echarts
