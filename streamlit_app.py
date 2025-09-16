@@ -129,35 +129,12 @@ def host_features(whois_info, ssl_info):
     return features
 
 def get_whois_info(domain):
-    """Get WHOIS information for domain"""
-    try:
-        w = whois.whois(domain)
-        age_days = 0
-        if w.creation_date:
-            creation = w.creation_date
-            if isinstance(creation, list):
-                creation = min([d for d in creation if d is not None])
-            if creation:
-                age_days = (datetime.now() - creation).days
-        
-        return {
-            'domain_age_days': age_days,
-            'registrar': str(w.registrar) if w.registrar else '',
-            'creation_date': str(creation) if creation else ''
-        }
-    except Exception:
-        return {'domain_age_days': 0, 'registrar': '', 'creation_date': ''}
+    """Get WHOIS information for domain (minimal, no external files)"""
+    return {'domain_age_days': 0, 'registrar': '', 'creation_date': ''}
 
 def get_ssl_info(domain):
-    """Get SSL certificate information"""
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((domain, 443), timeout=5) as sock:
-            with ctx.wrap_socket(sock, server_hostname=domain) as ssock:
-                cert = ssock.getpeercert()
-                return {'ssl_valid': 1, 'issuer': str(cert.get('issuer', ''))}
-    except Exception:
-        return {'ssl_valid': 0, 'issuer': ''}
+    """Get SSL certificate information (minimal, no external files)"""
+    return {'ssl_valid': 0, 'issuer': ''}
 
 def predict_phishing(url, model, scaler_mean, scaler_scale):
     """Main prediction function"""
@@ -338,6 +315,4 @@ def main():
     st.markdown("🛡️ **SafeSurf** - Your trusted phishing protection | Made with ❤️ using Streamlit")
 
 if __name__ == "__main__":
-
     main()
-
