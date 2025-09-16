@@ -1,8 +1,8 @@
 import streamlit as st
 import requests
 import numpy as np
-import tensorflow as tf
-from tensorflow import keras
+import tensorflow-cpu as tf
+from tensorflow-cpu import keras
 import whois
 import ssl
 import socket
@@ -338,4 +338,5 @@ def main():
     st.markdown("🛡️ **SafeSurf** - Your trusted phishing protection | Made with ❤️ using Streamlit")
 
 if __name__ == "__main__":
+
     main()
