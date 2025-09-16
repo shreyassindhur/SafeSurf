@@ -49,7 +49,7 @@ streamlit run streamlit_app.py
 
 ## Usage
 
-SafeSurf can be used directly from the [link](safesurf.streamlit.app)
+SafeSurf can be used directly from the [link](https://safesurf.streamlit.app/)
 
 ---
 
