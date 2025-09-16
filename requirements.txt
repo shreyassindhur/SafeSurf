@@ -1,11 +1,7 @@
 streamlit
-tensorflow
-numpy
 requests
+numpy
+tensorflow
+python-whois
 beautifulsoup4
 streamlit-echarts
-whois
-socket
-urlparse
-
-
