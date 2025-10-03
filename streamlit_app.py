@@ -210,9 +210,13 @@ def main():
         st.write("Sujal Phapale")
         st.write("Manasvi Singh")
     
+    # Initialize checked URLs in session state
+    if 'checked_urls' not in st.session_state:
+        st.session_state['checked_urls'] = []
+
     # Main content
     col1, col2 = st.columns([2, 1])
-    
+
     with col1:
         st.header("Check a URL")
         url_input = st.text_input(
@@ -230,10 +234,17 @@ def main():
                 with st.spinner("Analyzing URL... This may take a few seconds."):
                     try:
                         label, probability, features = predict_phishing(url_input, model, scaler_mean, scaler_scale)
-                        
+
+                        # Store checked URL in session state
+                        st.session_state['checked_urls'].append({
+                            "URL": url_input,
+                            "Result": label,
+                            "Probability": f"{probability:.2%}"
+                        })
+
                         # Results
                         st.header("🔍 Analysis Results")
-                        
+
                         # Main result
                         if "PHISHING" in label:
                             st.error(f"**{label}** - Probability: {probability:.2%}")
@@ -278,21 +289,21 @@ def main():
                         # Feature details
                         with st.expander("📊 Detailed Analysis"):
                             col_a, col_b = st.columns(2)
-                            
+
                             with col_a:
                                 st.subheader("URL Features")
                                 st.write(f"URL Length: {features.get('url_length', 0)}")
                                 st.write(f"Number of Tokens: {features.get('num_tokens', 0)}")
                                 st.write(f"Has IP Address: {'Yes' if features.get('has_ip', 0) else 'No'}")
                                 st.write(f"URL Entropy: {features.get('entropy', 0):.2f}")
-                                
+
                             with col_b:
                                 st.subheader("Security Features")
                                 st.write(f"Domain Age (days): {features.get('domain_age_days', 0)}")
                                 st.write(f"SSL Valid: {'Yes' if features.get('ssl_valid', 0) else 'No'}")
                                 st.write(f"Has Forms: {'Yes' if features.get('has_forms', 0) else 'No'}")
                                 st.write(f"External Links: {features.get('external_links', 0)}")
-                        
+
                     except Exception as e:
                         st.error(f"Error analyzing URL: {str(e)}")
         
@@ -300,6 +311,12 @@ def main():
             st.warning("Please enter a URL to check.")
     
     with col2:
+        st.header("Checked URLs")
+        if st.session_state['checked_urls']:
+            st.table(st.session_state['checked_urls'])
+        else:
+            st.write("No URLs checked yet.")
+
         st.header("🛡️ Stay Safe Online")
         st.info("**Tips to avoid phishing:**")
         st.write("• Check URLs carefully")
@@ -307,7 +324,6 @@ def main():
         st.write("• Verify sender identity")
         st.write("• Don't click suspicious links")
         st.write("• Use SafeSurf to check!")
-        
         st.markdown("[Learn more about phishing](https://www.phishing.org/what-is-phishing)")
 
     # Footer
