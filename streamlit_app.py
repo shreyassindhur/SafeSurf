@@ -1,17 +1,14 @@
 import streamlit as st
 import requests
 import numpy as np
-import tensorflow as tf
 from tensorflow import keras
-import whois
-import ssl
-import socket
-from datetime import datetime
 from urllib.parse import urlparse
-import os
 from bs4 import BeautifulSoup
 import re
 from streamlit_echarts import st_echarts
+
+# Live SSL and domain-age lookups, shown as extra information (see host_lookups.py)
+from host_lookups import get_whois_info, get_ssl_info
 
 # Page config
 st.set_page_config(
@@ -21,7 +18,17 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Load model and scaler (you'll need to upload these to your repo)
+# The 13 features, in the exact order the model was trained with
+REQUIRED_FEATURES = [
+    'url_length', 'num_tokens', 'has_ip', 'entropy', 'domain_age_days',
+    'ssl_valid', 'has_forms', 'external_links', 'num_scripts',
+    'hidden_fields', 'is_free_host', 'has_suspicious_subdomain', 'is_link_shortener'
+]
+IDX_AGE = REQUIRED_FEATURES.index('domain_age_days')
+IDX_SSL = REQUIRED_FEATURES.index('ssl_valid')
+
+
+# Load model and scaler
 @st.cache_resource
 def load_model():
     try:
@@ -33,52 +40,65 @@ def load_model():
         st.error(f"Error loading model: {e}")
         return None, None, None
 
+
+# Cache host lookups for 1 hour so repeated checks are fast
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_whois(domain):
+    return get_whois_info(domain)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_ssl(domain):
+    return get_ssl_info(domain)
+
+
 # Feature extraction functions
 def url_features(url):
     """Extract URL-based features"""
     features = {}
-    
+
     # Basic URL features
     features['url_length'] = len(url)
     features['num_tokens'] = len(url.split('/'))
     features['has_ip'] = bool(re.search(r'\d+\.\d+\.\d+\.\d+', url))
-    
+
     # Calculate entropy
     chars = list(url)
     char_counts = {}
     for char in chars:
         char_counts[char] = char_counts.get(char, 0) + 1
-    
+
     entropy = 0
     for count in char_counts.values():
         p = count / len(chars)
         if p > 0:
             entropy -= p * np.log2(p)
     features['entropy'] = entropy
-    
+
     # Suspicious patterns
     parsed = urlparse(url)
     domain = parsed.hostname or ""
-    
+
     # Free hosting detection
-    free_hosts = ['weebly.com', 'wixsite.com', 'webflow.io', 'mystrikingly.com', 
+    free_hosts = ['weebly.com', 'wixsite.com', 'webflow.io', 'mystrikingly.com',
                   'github.io', 'blogspot.com', 'wordpress.com', 'squarespace.com']
     features['is_free_host'] = int(any(host in domain for host in free_hosts))
-    
+
     # Suspicious subdomain
     subdomains = domain.split('.')
     features['has_suspicious_subdomain'] = int(len(subdomains) > 3)
-    
+
     # Link shortener detection
     shorteners = ['bit.ly', 'tinyurl.com', 'goo.gl', 't.co', 'ow.ly', 'buff.ly']
     features['is_link_shortener'] = int(any(shortener in domain for shortener in shorteners))
-    
+
     return features
+
 
 def html_features(html):
     """Extract HTML-based features"""
     features = {}
-    
+
     if not html:
         features.update({
             'has_forms': 0,
@@ -87,14 +107,14 @@ def html_features(html):
             'hidden_fields': 0
         })
         return features
-    
+
     try:
         soup = BeautifulSoup(html, 'html.parser')
-        
+
         # Form detection
         forms = soup.find_all('form')
         features['has_forms'] = int(len(forms) > 0)
-        
+
         # External links
         links = soup.find_all('a', href=True)
         external_count = 0
@@ -102,15 +122,15 @@ def html_features(html):
             if link['href'].startswith('http') and 'javascript:' not in link['href']:
                 external_count += 1
         features['external_links'] = external_count
-        
+
         # Scripts
         scripts = soup.find_all('script')
         features['num_scripts'] = len(scripts)
-        
+
         # Hidden fields
         hidden_inputs = soup.find_all('input', type='hidden')
         features['hidden_fields'] = len(hidden_inputs)
-        
+
     except Exception:
         features.update({
             'has_forms': 0,
@@ -118,8 +138,9 @@ def html_features(html):
             'num_scripts': 0,
             'hidden_fields': 0
         })
-    
+
     return features
+
 
 def host_features(whois_info, ssl_info):
     """Extract host-based features"""
@@ -128,19 +149,25 @@ def host_features(whois_info, ssl_info):
     features['ssl_valid'] = ssl_info.get('ssl_valid', 0)
     return features
 
-def get_whois_info(domain):
-    """Get WHOIS information for domain (minimal, no external files)"""
-    return {'domain_age_days': 0, 'registrar': '', 'creation_date': ''}
 
-def get_ssl_info(domain):
-    """Get SSL certificate information (minimal, no external files)"""
-    return {'ssl_valid': 0, 'issuer': ''}
+def host_warnings(features, lookups):
+    """Plain-language warnings from the live lookups (shown to the user, not used by the model)."""
+    warnings = []
+    whois_info = lookups.get('whois', {})
+    ssl_info = lookups.get('ssl', {})
+    if whois_info.get('ok') and features.get('domain_age_days', 0) < 30:
+        warnings.append(f"This domain was registered only {features['domain_age_days']} days ago. "
+                        "Very new domains are often used for phishing.")
+    if ssl_info.get('ok') and not ssl_info.get('ssl_valid'):
+        warnings.append("This site has no valid SSL certificate, so your connection may not be secure.")
+    return warnings
+
 
 def predict_phishing(url, model, scaler_mean, scaler_scale):
     """Main prediction function"""
     if not model:
-        return "Error: Model not loaded", 0.0, {}
-    
+        return "Error: Model not loaded", 0.0, {}, {}
+
     # Get HTML content
     html = ""
     try:
@@ -148,68 +175,71 @@ def predict_phishing(url, model, scaler_mean, scaler_scale):
         html = response.text
     except Exception:
         pass
-    
+
     # Extract domain
     parsed = urlparse(url)
     domain = parsed.hostname or ""
-    
-    # Get features
+
+    # Get features (host lookups are live, with timeouts and safe fallbacks)
     url_feats = url_features(url)
     html_feats = html_features(html)
-    whois_info = get_whois_info(domain)
-    ssl_info = get_ssl_info(domain)
+    whois_info = cached_whois(domain)
+    ssl_info = cached_ssl(domain)
     host_feats = host_features(whois_info, ssl_info)
-    
+
     # Combine all features
     all_features = {**url_feats, **html_feats, **host_feats}
-    
+
     # Ensure all required features are present
-    required_features = [
-        'url_length', 'num_tokens', 'has_ip', 'entropy', 'domain_age_days', 
-        'ssl_valid', 'has_forms', 'external_links', 'num_scripts', 
-        'hidden_fields', 'is_free_host', 'has_suspicious_subdomain', 'is_link_shortener'
-    ]
-    
-    for feat in required_features:
+    for feat in REQUIRED_FEATURES:
         if feat not in all_features:
             all_features[feat] = 0
-    
+
     # Prepare model input
-    feature_vector = [all_features[feat] for feat in required_features]
-    feature_vector = np.array(feature_vector)
+    feature_vector = np.array([all_features[feat] for feat in REQUIRED_FEATURES], dtype=float)
+
+    # IMPORTANT: this model was trained with domain_age_days = 0 and ssl_valid = 0
+    # for every row (their training mean is 0 and scale is 1). So we always give the
+    # model its training value for these two features. The live lookups are shown
+    # to the user as extra information and warnings, not fed to the model.
+    feature_vector[IDX_AGE] = scaler_mean[IDX_AGE]
+    feature_vector[IDX_SSL] = scaler_mean[IDX_SSL]
+
     feature_vector = (feature_vector - scaler_mean) / scaler_scale
     feature_vector = feature_vector.reshape(1, -1)
-    
+
     # Predict
     prob = float(model.predict(feature_vector)[0][0])
     label = "🚨 PHISHING" if prob > 0.5 else "✅ SAFE"
-    
-    return label, prob, all_features
+
+    lookups = {'whois': whois_info, 'ssl': ssl_info}
+    return label, prob, all_features, lookups
+
 
 # Main app
 def main():
     # Header
     st.title("🛡️ SafeSurf - Phishing Detector")
     st.markdown("### Protect yourself from malicious websites")
-    
+
     # Load model
     model, scaler_mean, scaler_scale = load_model()
-    
+
     # Sidebar
     with st.sidebar:
         st.header("About SafeSurf")
         st.write("SafeSurf uses advanced machine learning to detect phishing websites and protect you from online threats.")
-        
+
         st.header("How it works")
         st.write("1. Enter a URL")
         st.write("2. We analyze multiple factors")
         st.write("3. Get instant results")
-        
+
         st.header("Team")
         st.write("Shreyas Sindhur")
         st.write("Sujal Phapale")
         st.write("Manasvi Singh")
-    
+
     # Initialize checked URLs in session state
     if 'checked_urls' not in st.session_state:
         st.session_state['checked_urls'] = []
@@ -219,21 +249,23 @@ def main():
 
     with col1:
         st.header("Check a URL")
+
         url_input = st.text_input(
             "Enter the website URL you want to check:",
             placeholder="https://example.com",
             help="Enter the complete URL including http:// or https://"
         )
-        
+
         check_button = st.button("🔍 Check URL", type="primary", use_container_width=True)
-        
+
         if check_button and url_input:
             if not url_input.startswith(('http://', 'https://')):
                 st.error("Please enter a valid URL starting with http:// or https://")
             else:
                 with st.spinner("Analyzing URL... This may take a few seconds."):
                     try:
-                        label, probability, features = predict_phishing(url_input, model, scaler_mean, scaler_scale)
+                        label, probability, features, lookups = predict_phishing(
+                            url_input, model, scaler_mean, scaler_scale)
 
                         # Store checked URL in session state
                         st.session_state['checked_urls'].append({
@@ -253,10 +285,16 @@ def main():
                             st.success(f"**{label}** - Probability: {(1-probability):.2%}")
                             st.info("✅ This website appears to be legitimate.")
 
+                        # Extra warnings from live domain-age and SSL lookups
+                        for w in host_warnings(features, lookups):
+                            st.warning("⚠️ " + w)
+
                         # Stylish Odometer (Gauge)
                         st.markdown("#### Security Level")
+
                         # Always show 0 = phishing (red), 100 = safe (green)
                         security_score = int((1 - probability) * 100)
+
                         gauge_option = {
                             "tooltip": {"formatter": "{a} <br/>{b} : {c}%"},
                             "series": [
@@ -269,9 +307,9 @@ def main():
                                     "axisLine": {
                                         "lineStyle": {
                                             "color": [
-                                                [0.5, "#d9534f"],   # Red for 0-50 (phishing)
-                                                [0.8, "#f0ad4e"],   # Orange for 50-80 (warning)
-                                                [1, "#5cb85c"]      # Green for 80-100 (safe)
+                                                [0.5, "#d9534f"],  # Red for 0-50 (phishing)
+                                                [0.8, "#f0ad4e"],  # Orange for 50-80 (warning)
+                                                [1, "#5cb85c"]     # Green for 80-100 (safe)
                                             ],
                                             "width": 30
                                         }
@@ -284,6 +322,7 @@ def main():
                                 }
                             ]
                         }
+
                         st_echarts(options=gauge_option, height="300px")
 
                         # Feature details
@@ -299,17 +338,32 @@ def main():
 
                             with col_b:
                                 st.subheader("Security Features")
-                                st.write(f"Domain Age (days): {features.get('domain_age_days', 0)}")
-                                st.write(f"SSL Valid: {'Yes' if features.get('ssl_valid', 0) else 'No'}")
+                                whois_info = lookups.get('whois', {})
+                                ssl_info = lookups.get('ssl', {})
+
+                                if whois_info.get('ok'):
+                                    st.write(f"Domain Age (days): {features.get('domain_age_days', 0)}")
+                                    if whois_info.get('registrar'):
+                                        st.write(f"Registrar: {whois_info['registrar']}")
+                                else:
+                                    st.write("Domain Age: lookup unavailable")
+
+                                if ssl_info.get('ok'):
+                                    st.write(f"SSL Valid: {'Yes' if features.get('ssl_valid', 0) else 'No'}")
+                                    if ssl_info.get('issuer'):
+                                        st.write(f"Certificate Issuer: {ssl_info['issuer']}")
+                                else:
+                                    st.write("SSL Check: lookup unavailable")
+
                                 st.write(f"Has Forms: {'Yes' if features.get('has_forms', 0) else 'No'}")
                                 st.write(f"External Links: {features.get('external_links', 0)}")
 
                     except Exception as e:
                         st.error(f"Error analyzing URL: {str(e)}")
-        
+
         elif check_button:
             st.warning("Please enter a URL to check.")
-    
+
     with col2:
         st.header("Checked URLs")
         if st.session_state['checked_urls']:
@@ -324,11 +378,13 @@ def main():
         st.write("• Verify sender identity")
         st.write("• Don't click suspicious links")
         st.write("• Use SafeSurf to check!")
+
         st.markdown("[Learn more about phishing](https://www.phishing.org/what-is-phishing)")
 
     # Footer
     st.markdown("---")
     st.markdown("🛡️ **SafeSurf** - Your trusted phishing protection | Made with ❤️ using Streamlit")
+
 
 if __name__ == "__main__":
     main()
